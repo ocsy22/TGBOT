@@ -1,0 +1,122 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # 允许手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest   # 真正的Windows机器
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install PyQt6 PyQt6-Qt6 PyQt6-sip
+        pip install telethon
+        pip install aiohttp aiofiles
+        pip install requests
+        pip install Pillow
+        pip install mutagen
+        pip install apscheduler
+        pip install cryptg
+        pip install openai
+        pip install PySocks
+        pip install pyinstaller
+
+    - name: Build EXE with PyInstaller
+      run: |
+        pyinstaller --onefile --windowed `
+          --name TGAutoPublisher `
+          --hidden-import PyQt6 `
+          --hidden-import PyQt6.QtWidgets `
+          --hidden-import PyQt6.QtCore `
+          --hidden-import PyQt6.QtGui `
+          --hidden-import PyQt6.sip `
+          --hidden-import telethon `
+          --hidden-import telethon.sessions `
+          --hidden-import telethon.sessions.string `
+          --hidden-import aiohttp `
+          --hidden-import aiofiles `
+          --hidden-import cryptg `
+          --hidden-import apscheduler `
+          --hidden-import apscheduler.schedulers.background `
+          --hidden-import socks `
+          --hidden-import PIL `
+          --hidden-import PIL.Image `
+          --hidden-import core.database `
+          --hidden-import core.ai_generator `
+          --hidden-import core.video_processor `
+          --hidden-import core.telegram_sender `
+          --hidden-import core.task_engine `
+          --hidden-import core.scheduler `
+          --hidden-import ui.styles `
+          --hidden-import ui.main_window `
+          --hidden-import ui.pages.dashboard `
+          --hidden-import ui.pages.channel_page `
+          --hidden-import ui.pages.media_page `
+          --hidden-import ui.pages.task_page `
+          --hidden-import ui.pages.settings_page `
+          --hidden-import ui.pages.other_pages `
+          --exclude-module tkinter `
+          --exclude-module matplotlib `
+          --noconfirm --clean `
+          main.py
+
+    - name: Check EXE size
+      run: |
+        $size = (Get-Item "dist\TGAutoPublisher.exe").length / 1MB
+        Write-Host "EXE size: $([math]::Round($size,1)) MB"
+        dir dist\
+
+    - name: Upload EXE as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TGAutoPublisher-Windows-EXE
+        path: dist/TGAutoPublisher.exe
+        retention-days: 30
+
+    - name: Create/Update GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.2.0
+        name: "TG Auto Publisher v1.2.0 (Windows EXE)"
+        body: |
+          ## TG Auto Publisher v1.2.0 - Windows 版本
+
+          ### ✅ 下载说明
+          1. 下载 `TGAutoPublisher.exe`
+          2. 下载 `ffmpeg.exe`（从 https://ffmpeg.org/download.html 获取）
+          3. 将两个文件放在**同一文件夹**
+          4. 双击 `TGAutoPublisher.exe` 运行
+
+          ### 🚀 功能特性
+          - ✅ 多账号/多频道管理 (Bot API + MTProto真实账号)
+          - ✅ AI 自动写作文案（12家AI服务商，含无内容限制选项）
+          - ✅ 视频 FFmpeg 处理（裁剪 → 自动保存到`已裁剪`文件夹）
+          - ✅ 视频截图自动生成封面图（3x3网格）
+          - ✅ 定时自动发布到多频道
+          - ✅ 支持大文件 >50MB（MTProto最大2GB）
+          - ✅ 深色现代 UI
+
+          ### 🤖 支持的AI（含成人内容无限制）
+          Grok(xAI) · Together AI · Mistral · DeepSeek · Groq · Gemini · OpenAI · 等12家
+
+          ### ⚙️ FFmpeg 路径
+          将 `ffmpeg.exe` 放在程序同目录，或在「设置→视频处理」中配置路径。
+        files: |
+          dist/TGAutoPublisher.exe
+        draft: false
+        prerelease: false
+        make_latest: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
