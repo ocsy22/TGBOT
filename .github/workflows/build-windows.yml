@@ -33,50 +33,22 @@ jobs:
         pip install PySocks
         pip install pyinstaller
 
-    - name: Build EXE with PyInstaller
+    - name: Remove root __init__.py
       run: |
-        pyinstaller --onefile --windowed `
-          --name TGAutoPublisher `
-          --hidden-import PyQt6 `
-          --hidden-import PyQt6.QtWidgets `
-          --hidden-import PyQt6.QtCore `
-          --hidden-import PyQt6.QtGui `
-          --hidden-import PyQt6.sip `
-          --hidden-import telethon `
-          --hidden-import telethon.sessions `
-          --hidden-import telethon.sessions.string `
-          --hidden-import aiohttp `
-          --hidden-import aiofiles `
-          --hidden-import cryptg `
-          --hidden-import apscheduler `
-          --hidden-import apscheduler.schedulers.background `
-          --hidden-import socks `
-          --hidden-import PIL `
-          --hidden-import PIL.Image `
-          --hidden-import core.database `
-          --hidden-import core.ai_generator `
-          --hidden-import core.video_processor `
-          --hidden-import core.telegram_sender `
-          --hidden-import core.task_engine `
-          --hidden-import core.scheduler `
-          --hidden-import ui.styles `
-          --hidden-import ui.main_window `
-          --hidden-import ui.pages.dashboard `
-          --hidden-import ui.pages.channel_page `
-          --hidden-import ui.pages.media_page `
-          --hidden-import ui.pages.task_page `
-          --hidden-import ui.pages.settings_page `
-          --hidden-import ui.pages.other_pages `
-          --exclude-module tkinter `
-          --exclude-module matplotlib `
-          --noconfirm --clean `
-          main.py
+        if (Test-Path "__init__.py") { Remove-Item "__init__.py" }
+        Write-Host "Root __init__.py removed (if existed)"
+
+    - name: Build EXE using spec file
+      run: |
+        pyinstaller --noconfirm --clean TGAutoPublisher.spec
 
     - name: Verify EXE
       run: |
-        $size = (Get-Item "dist\TGAutoPublisher.exe").length / 1MB
+        $exePath = "dist\TGAutoPublisher.exe"
+        if (-not (Test-Path $exePath)) { throw "EXE not found!" }
+        $size = (Get-Item $exePath).length / 1MB
         Write-Host "EXE size: $([math]::Round($size,1)) MB"
-        if ($size -lt 10) { throw "EXE too small, build may have failed" }
+        if ($size -lt 10) { throw "EXE too small, build failed" }
 
     - name: Upload EXE as Artifact
       uses: actions/upload-artifact@v4
@@ -85,40 +57,32 @@ jobs:
         path: dist/TGAutoPublisher.exe
         retention-days: 30
 
-    - name: Delete old release if exists
+    - name: Delete old release tag
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        $release = gh release view v1.3.0 --json id 2>$null
-        if ($LASTEXITCODE -eq 0) {
-          gh release delete v1.3.0 --yes
-          git push origin :refs/tags/v1.3.0 2>$null
-          Start-Sleep -Seconds 3
-        }
+        gh release delete v1.3.0 --yes 2>$null
+        git push origin :refs/tags/v1.3.0 2>$null
+        Start-Sleep -Seconds 2
       continue-on-error: true
 
-    - name: Create GitHub Release
+    - name: Create GitHub Release and upload EXE
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         gh release create v1.3.0 `
           --title "TG Auto Publisher v1.3.0 (Windows EXE)" `
-          --notes "## TG Auto Publisher v1.3.0 Windows版本
+          --notes "## TG Auto Publisher v1.3.0
 
-        ### 下载说明
+        ### 下载使用
         1. 下载 TGAutoPublisher.exe
-        2. 下载 ffmpeg.exe（https://ffmpeg.org/download.html）
-        3. 将 ffmpeg.exe 放在 TGAutoPublisher.exe 同一文件夹
-        4. 双击 TGAutoPublisher.exe 运行
+        2. 从 https://ffmpeg.org/download.html 下载 ffmpeg.exe (Windows版)
+        3. 把 ffmpeg.exe 放在 TGAutoPublisher.exe **同一文件夹**
+        4. 双击运行
 
-        ### 功能特性
-        - 多账号/多频道同时发布 (Bot API + MTProto真实账号)
-        - AI自动写作文案（12家AI服务商，含无内容限制选项）
-        - 视频FFmpeg处理（裁剪、截图，输出到已裁剪文件夹）
-        - 定时自动发布
-        - 支持大文件2GB（MTProto模式）
-        - 深色现代UI界面
-
-        ### FFmpeg放置位置
-        将 ffmpeg.exe 放在 TGAutoPublisher.exe 同目录，或在设置中配置路径。" `
+        ### 功能
+        - 多账号多频道同时发布 (Bot API / MTProto真实账号)
+        - AI自动写作文案 (12家服务商，含无内容限制)
+        - 视频裁剪+截图，输出到【已裁剪】文件夹
+        - 定时自动发布" `
           dist/TGAutoPublisher.exe
