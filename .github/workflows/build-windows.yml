@@ -3,11 +3,11 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:   # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build-windows:
-    runs-on: windows-latest   # 真正的Windows机器
+    runs-on: windows-latest
 
     steps:
     - name: Checkout code
@@ -72,11 +72,11 @@ jobs:
           --noconfirm --clean `
           main.py
 
-    - name: Check EXE size
+    - name: Verify EXE
       run: |
         $size = (Get-Item "dist\TGAutoPublisher.exe").length / 1MB
         Write-Host "EXE size: $([math]::Round($size,1)) MB"
-        dir dist\
+        if ($size -lt 10) { throw "EXE too small, build may have failed" }
 
     - name: Upload EXE as Artifact
       uses: actions/upload-artifact@v4
@@ -85,38 +85,40 @@ jobs:
         path: dist/TGAutoPublisher.exe
         retention-days: 30
 
-    - name: Create/Update GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: v1.2.0
-        name: "TG Auto Publisher v1.2.0 (Windows EXE)"
-        body: |
-          ## TG Auto Publisher v1.2.0 - Windows 版本
-
-          ### ✅ 下载说明
-          1. 下载 `TGAutoPublisher.exe`
-          2. 下载 `ffmpeg.exe`（从 https://ffmpeg.org/download.html 获取）
-          3. 将两个文件放在**同一文件夹**
-          4. 双击 `TGAutoPublisher.exe` 运行
-
-          ### 🚀 功能特性
-          - ✅ 多账号/多频道管理 (Bot API + MTProto真实账号)
-          - ✅ AI 自动写作文案（12家AI服务商，含无内容限制选项）
-          - ✅ 视频 FFmpeg 处理（裁剪 → 自动保存到`已裁剪`文件夹）
-          - ✅ 视频截图自动生成封面图（3x3网格）
-          - ✅ 定时自动发布到多频道
-          - ✅ 支持大文件 >50MB（MTProto最大2GB）
-          - ✅ 深色现代 UI
-
-          ### 🤖 支持的AI（含成人内容无限制）
-          Grok(xAI) · Together AI · Mistral · DeepSeek · Groq · Gemini · OpenAI · 等12家
-
-          ### ⚙️ FFmpeg 路径
-          将 `ffmpeg.exe` 放在程序同目录，或在「设置→视频处理」中配置路径。
-        files: |
-          dist/TGAutoPublisher.exe
-        draft: false
-        prerelease: false
-        make_latest: true
+    - name: Delete old release if exists
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $release = gh release view v1.3.0 --json id 2>$null
+        if ($LASTEXITCODE -eq 0) {
+          gh release delete v1.3.0 --yes
+          git push origin :refs/tags/v1.3.0 2>$null
+          Start-Sleep -Seconds 3
+        }
+      continue-on-error: true
+
+    - name: Create GitHub Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release create v1.3.0 `
+          --title "TG Auto Publisher v1.3.0 (Windows EXE)" `
+          --notes "## TG Auto Publisher v1.3.0 Windows版本
+
+        ### 下载说明
+        1. 下载 TGAutoPublisher.exe
+        2. 下载 ffmpeg.exe（https://ffmpeg.org/download.html）
+        3. 将 ffmpeg.exe 放在 TGAutoPublisher.exe 同一文件夹
+        4. 双击 TGAutoPublisher.exe 运行
+
+        ### 功能特性
+        - 多账号/多频道同时发布 (Bot API + MTProto真实账号)
+        - AI自动写作文案（12家AI服务商，含无内容限制选项）
+        - 视频FFmpeg处理（裁剪、截图，输出到已裁剪文件夹）
+        - 定时自动发布
+        - 支持大文件2GB（MTProto模式）
+        - 深色现代UI界面
+
+        ### FFmpeg放置位置
+        将 ffmpeg.exe 放在 TGAutoPublisher.exe 同目录，或在设置中配置路径。" `
+          dist/TGAutoPublisher.exe

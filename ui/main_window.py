@@ -1,194 +1,316 @@
 """
-主窗口
+主窗口 - 现代深色UI设计
 """
 import sys
 import os
-from PyQt6.QtWidgets import *
-from PyQt6.QtCore import *
-from PyQt6.QtGui import *
-from ui.styles import MAIN_STYLE
-from ui.pages.dashboard import DashboardPage
-from ui.pages.channel_page import ChannelPage
-from ui.pages.media_page import MediaLibraryPage
-from ui.pages.task_page import TaskPage
-from ui.pages.settings_page import SettingsPage
-from ui.pages.other_pages import (
-    AutoPublishPage, CopywritingPage, CopyTemplatePage,
-    WritingDirectionPage, MediaCollectPage, BroadcastPage, PublishSettingsPage
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QPushButton, QLabel, QStackedWidget, QFrame,
+    QStatusBar, QSizePolicy, QSpacerItem
 )
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QPainter, QColor
+
+from ui.styles import DARK_THEME
+
+
+class SidebarButton(QPushButton):
+    """侧边栏导航按钮"""
+
+    def __init__(self, icon_text: str, label: str, parent=None):
+        super().__init__(parent)
+        self.icon_text = icon_text
+        self.label_text = label
+        self.setObjectName("navBtn")
+        self.setCheckable(True)
+        self.setFixedHeight(46)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 0, 14, 0)
+        layout.setSpacing(10)
+
+        # 图标
+        icon_lbl = QLabel(self.icon_text)
+        icon_lbl.setFixedWidth(22)
+        icon_lbl.setStyleSheet("font-size: 16px; background: transparent; color: inherit;")
+        icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        # 文字
+        text_lbl = QLabel(self.label_text)
+        text_lbl.setStyleSheet("font-size: 13px; background: transparent; color: inherit; font-weight: 500;")
+        text_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        layout.addWidget(icon_lbl)
+        layout.addWidget(text_lbl)
+        layout.addStretch()
 
 
 class MainWindow(QMainWindow):
-    NAV_ITEMS = [
-        ('仪表盘', '🖥', 'dashboard'),
-        ('素材库', '📁', 'media'),
-        ('任务中心', '📋', 'tasks'),
-        ('频道管理', '📡', 'channels'),
-        ('自动发布', '🚀', 'auto_publish'),
-        ('文案库', '📝', 'copywriting'),
-        ('文案格式', '✏️', 'copy_template'),
-        ('写作方向', '🧭', 'writing_direction'),
-        ('素材采集', '⬇️', 'media_collect'),
-        ('群发', '👥', 'broadcast'),
-        ('发布设置', '⚙️', 'publish_settings'),
-        ('设置', '🔧', 'settings'),
-    ]
+    """主窗口"""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Telegram Auto Publisher')
-        self.setMinimumSize(1100, 720)
-        self.resize(1280, 800)
-        self.setStyleSheet(MAIN_STYLE)
+        self.setWindowTitle("TG Auto Publisher v1.3.0")
+        self.setMinimumSize(1200, 750)
+        self.resize(1380, 860)
+        self.setStyleSheet(DARK_THEME)
 
-        # 设置自定义标题栏样式
-        self._set_window_icon()
-        self._build_ui()
-        self._nav_to('dashboard')
+        # 延迟导入页面，避免循环导入
+        self._pages = {}
+        self._current_page = None
 
-    def _set_window_icon(self):
-        # 创建简单图标
-        pix = QPixmap(32, 32)
-        pix.fill(Qt.GlobalColor.transparent)
-        from PyQt6.QtGui import QPainter, QBrush, QColor, QPen
-        painter = QPainter(pix)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QBrush(QColor('#1f6feb')))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(0, 0, 32, 32)
-        painter.setPen(QPen(QColor('white'), 2))
-        painter.setFont(QFont('Segoe UI', 14, QFont.Weight.Bold))
-        painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, '▷')
-        painter.end()
-        self.setWindowIcon(QIcon(pix))
+        self._setup_ui()
+        self._setup_status_bar()
+        self._nav_buttons = []
+        self._setup_navigation()
+        self._navigate_to(0)
 
-    def _build_ui(self):
+        # 定时刷新状态栏
+        self._status_timer = QTimer()
+        self._status_timer.timeout.connect(self._update_status)
+        self._status_timer.start(5000)
+
+    def _setup_ui(self):
         central = QWidget()
-        central.setObjectName('central')
-        main_lay = QHBoxLayout(central)
-        main_lay.setContentsMargins(0, 0, 0, 0)
-        main_lay.setSpacing(0)
         self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # ===== 侧边栏 =====
+        # 左侧导航
+        self.sidebar = self._create_sidebar()
+        main_layout.addWidget(self.sidebar)
+
+        # 右侧内容区
+        self.content_stack = QStackedWidget()
+        self.content_stack.setObjectName("contentArea")
+        main_layout.addWidget(self.content_stack, 1)
+
+    def _create_sidebar(self) -> QWidget:
         sidebar = QWidget()
-        sidebar.setObjectName('sidebar')
-        sidebar.setFixedWidth(180)
-        sidebar_lay = QVBoxLayout(sidebar)
-        sidebar_lay.setContentsMargins(0, 0, 0, 0)
-        sidebar_lay.setSpacing(0)
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(210)
+
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(8, 0, 8, 12)
+        layout.setSpacing(2)
 
         # Logo区域
-        logo_area = QWidget()
-        logo_area.setObjectName('logo_area')
-        logo_area.setStyleSheet('padding:16px 12px;border-bottom:1px solid #21262d;')
-        logo_lay = QHBoxLayout(logo_area)
-        logo_lay.setContentsMargins(8, 0, 8, 0)
-        logo_lay.setSpacing(10)
+        logo_widget = QWidget()
+        logo_widget.setFixedHeight(70)
+        logo_layout = QVBoxLayout(logo_widget)
+        logo_layout.setContentsMargins(14, 16, 14, 8)
+        logo_layout.setSpacing(2)
 
-        # TG图标
-        icon_lbl = QLabel('✈️')
-        icon_lbl.setStyleSheet('font-size:20px;')
-        icon_lbl.setFixedWidth(28)
+        title_label = QLabel("✈️ TG Publisher")
+        title_label.setStyleSheet("""
+            font-size: 15px;
+            font-weight: 700;
+            color: #e6edf3;
+            background: transparent;
+        """)
+        version_label = QLabel("v1.3.0  多账号发布系统")
+        version_label.setStyleSheet("""
+            font-size: 10px;
+            color: #484f58;
+            background: transparent;
+        """)
+        logo_layout.addWidget(title_label)
+        logo_layout.addWidget(version_label)
 
-        title_lay = QVBoxLayout()
-        title_lay.setSpacing(0)
-        title = QLabel('Telegram Publisher')
-        title.setStyleSheet('color:#e6edf3;font-size:13px;font-weight:bold;')
-        subtitle = QLabel('Auto Video System')
-        subtitle.setStyleSheet('color:#8b949e;font-size:9px;')
-        title_lay.addWidget(title)
-        title_lay.addWidget(subtitle)
+        layout.addWidget(logo_widget)
 
-        logo_lay.addWidget(icon_lbl)
-        logo_lay.addLayout(title_lay, 1)
-        sidebar_lay.addWidget(logo_area)
+        # 分割线
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background-color: #21262d; max-height: 1px; margin: 0 6px;")
+        layout.addWidget(sep)
+        layout.addSpacing(6)
 
-        # 导航按钮
-        nav_scroll = QScrollArea()
-        nav_scroll.setWidgetResizable(True)
-        nav_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        nav_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        nav_widget = QWidget()
-        nav_layout = QVBoxLayout(nav_widget)
-        nav_layout.setContentsMargins(4, 8, 4, 8)
-        nav_layout.setSpacing(2)
+        # 导航项定义
+        self._nav_items = [
+            ("📊", "仪表板"),
+            ("📢", "频道管理"),
+            ("🎬", "媒体库"),
+            ("📅", "任务中心"),
+            ("🤖", "AI文案"),
+            ("⚙️", "系统设置"),
+            ("📖", "操作指南"),
+        ]
 
-        self._nav_btns = {}
-        for label, icon, key in self.NAV_ITEMS:
-            btn = QPushButton(f'  {icon}  {label}')
-            btn.setObjectName('nav_btn')
-            btn.setFixedHeight(36)
-            btn.setCheckable(True)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet('''
-                QPushButton#nav_btn {
-                    background: transparent;
-                    border: none;
-                    color: #8b949e;
-                    text-align: left;
-                    padding: 8px 12px 8px 16px;
-                    border-radius: 6px;
-                    font-size: 12px;
-                }
-                QPushButton#nav_btn:hover {
-                    background-color: #21262d;
-                    color: #e6edf3;
-                }
-                QPushButton#nav_btn:checked {
-                    background-color: #21262d;
-                    color: #e6edf3;
-                    border-left: 2px solid #1f6feb;
-                }
-            ''')
-            btn.clicked.connect(lambda checked, k=key: self._nav_to(k))
-            self._nav_btns[key] = btn
-            nav_layout.addWidget(btn)
+        # 创建导航按钮容器（后续在_setup_navigation中填充）
+        self._nav_container = QWidget()
+        self._nav_layout = QVBoxLayout(self._nav_container)
+        self._nav_layout.setContentsMargins(0, 0, 0, 0)
+        self._nav_layout.setSpacing(2)
+        layout.addWidget(self._nav_container)
 
-        nav_layout.addStretch()
-        nav_scroll.setWidget(nav_widget)
-        sidebar_lay.addWidget(nav_scroll, 1)
+        layout.addStretch()
 
-        # 版本号
-        ver_lbl = QLabel('v1.2.0')
-        ver_lbl.setObjectName('version_label')
-        ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ver_lbl.setStyleSheet('color:#484f58;font-size:10px;padding:8px;')
-        sidebar_lay.addWidget(ver_lbl)
+        # 底部信息
+        bottom_widget = QWidget()
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(14, 8, 14, 4)
+        bottom_layout.setSpacing(4)
 
-        main_lay.addWidget(sidebar)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("background-color: #21262d; max-height: 1px;")
+        bottom_layout.addWidget(sep2)
 
-        # ===== 内容区域 =====
-        self._stack = QStackedWidget()
-        self._stack.setObjectName('content_area')
+        github_label = QLabel("📦 github.com/ocsy22/TGBOT")
+        github_label.setStyleSheet("font-size: 10px; color: #484f58; background: transparent;")
+        github_label.setWordWrap(True)
+        bottom_layout.addWidget(github_label)
 
-        self._pages = {
-            'dashboard': DashboardPage(),
-            'media': MediaLibraryPage(),
-            'tasks': TaskPage(),
-            'channels': ChannelPage(),
-            'auto_publish': AutoPublishPage(),
-            'copywriting': CopywritingPage(),
-            'copy_template': CopyTemplatePage(),
-            'writing_direction': WritingDirectionPage(),
-            'media_collect': MediaCollectPage(),
-            'broadcast': BroadcastPage(),
-            'publish_settings': PublishSettingsPage(),
-            'settings': SettingsPage(),
-        }
+        layout.addWidget(bottom_widget)
+        return sidebar
 
-        for key, page in self._pages.items():
-            self._stack.addWidget(page)
+    def _setup_navigation(self):
+        """设置导航按钮"""
+        from PyQt6.QtWidgets import QButtonGroup
+        self._btn_group = QButtonGroup(self)
+        self._btn_group.setExclusive(True)
 
-        main_lay.addWidget(self._stack, 1)
+        self._nav_buttons = []
+        for i, (icon, label) in enumerate(self._nav_items):
+            btn = SidebarButton(icon, label)
+            self._nav_layout.addWidget(btn)
+            self._btn_group.addButton(btn, i)
+            self._nav_buttons.append(btn)
+            btn.clicked.connect(lambda checked, idx=i: self._navigate_to(idx))
 
-    def _nav_to(self, key):
-        for k, btn in self._nav_btns.items():
-            btn.setChecked(k == key)
+    def _get_page(self, index: int) -> QWidget:
+        """懒加载页面"""
+        if index not in self._pages:
+            page = self._create_page(index)
+            self._pages[index] = page
+            self.content_stack.addWidget(page)
+        return self._pages[index]
 
-        page = self._pages.get(key)
-        if page:
-            self._stack.setCurrentWidget(page)
-            if hasattr(page, 'refresh'):
-                page.refresh()
+    def _create_page(self, index: int) -> QWidget:
+        """创建对应索引的页面"""
+        if index == 0:
+            from ui.pages.dashboard import DashboardPage
+            return DashboardPage()
+        elif index == 1:
+            from ui.pages.channel_page import ChannelPage
+            return ChannelPage()
+        elif index == 2:
+            from ui.pages.media_page import MediaPage
+            return MediaPage()
+        elif index == 3:
+            from ui.pages.task_page import TaskPage
+            return TaskPage()
+        elif index == 4:
+            from ui.pages.other_pages import AIPage
+            return AIPage()
+        elif index == 5:
+            from ui.pages.settings_page import SettingsPage
+            return SettingsPage()
+        elif index == 6:
+            from ui.pages.other_pages import HelpPage
+            return HelpPage()
+        else:
+            placeholder = QWidget()
+            lbl = QLabel(f"页面 {index} 开发中...")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: #484f58; font-size: 16px;")
+            layout = QVBoxLayout(placeholder)
+            layout.addWidget(lbl)
+            return placeholder
+
+    def _navigate_to(self, index: int):
+        """导航到指定页面"""
+        page = self._get_page(index)
+        self.content_stack.setCurrentWidget(page)
+        self._current_page = index
+
+        # 更新按钮状态
+        if index < len(self._nav_buttons):
+            self._nav_buttons[index].setChecked(True)
+
+    def _setup_status_bar(self):
+        """设置状态栏"""
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.setFixedHeight(24)
+
+        self._status_left = QLabel("就绪")
+        self._status_right = QLabel("FFmpeg: 检测中...")
+        self._status_right.setStyleSheet("color: #484f58; font-size: 11px;")
+
+        self.status_bar.addWidget(self._status_left)
+        self.status_bar.addPermanentWidget(self._status_right)
+
+        QTimer.singleShot(500, self._update_status)
+
+    def _update_status(self):
+        """更新状态栏"""
+        import shutil
+        from core.database import get_db
+
+        try:
+            db = get_db()
+            accounts = db.execute("SELECT COUNT(*) FROM accounts WHERE enabled=1").fetchone()[0]
+            channels = db.execute("SELECT COUNT(*) FROM channels WHERE enabled=1").fetchone()[0]
+            tasks = db.execute("SELECT COUNT(*) FROM tasks WHERE status='pending'").fetchone()[0]
+            db.close()
+            self._status_left.setText(
+                f"活跃账号: {accounts}  |  监听频道: {channels}  |  待发任务: {tasks}"
+            )
+        except Exception:
+            pass
+
+        # 检查FFmpeg
+        ffmpeg_path = self._find_ffmpeg()
+        if ffmpeg_path:
+            self._status_right.setText(f"✅ FFmpeg: {ffmpeg_path}")
+            self._status_right.setStyleSheet("color: #3fb950; font-size: 11px;")
+        else:
+            self._status_right.setText("⚠️ FFmpeg 未找到（需手动配置）")
+            self._status_right.setStyleSheet("color: #d29922; font-size: 11px;")
+
+    def _find_ffmpeg(self) -> str:
+        """查找FFmpeg"""
+        import shutil
+        from core.database import get_settings
+
+        try:
+            settings = get_settings()
+            custom_path = settings.get('ffmpeg_path', '')
+            if custom_path and os.path.exists(custom_path):
+                return custom_path
+        except Exception:
+            pass
+
+        # 自动查找
+        import shutil
+        found = shutil.which('ffmpeg')
+        if found:
+            return found
+
+        # 查找当前目录
+        exe_dir = os.path.dirname(sys.executable)
+        for name in ['ffmpeg.exe', 'ffmpeg']:
+            path = os.path.join(exe_dir, name)
+            if os.path.exists(path):
+                return path
+
+        return ''
+
+    def show_message(self, msg: str, timeout: int = 3000):
+        """在状态栏显示临时消息"""
+        self.status_bar.showMessage(msg, timeout)
+
+    def closeEvent(self, event):
+        """关闭事件"""
+        try:
+            from core.scheduler import get_scheduler
+            scheduler = get_scheduler()
+            scheduler.shutdown()
+        except Exception:
+            pass
+        event.accept()

@@ -1,1013 +1,542 @@
 """
-其他页面：自动发布、文案库、文案格式、写作方向、群发、发布设置
+设置页面 + AI文案页面 + 帮助页面
 """
-import json
 import os
-from PyQt6.QtWidgets import *
-from PyQt6.QtCore import *
-from PyQt6.QtGui import *
-from core.database import DB
+import json
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+    QPushButton, QLineEdit, QComboBox, QSpinBox, QFormLayout,
+    QMessageBox, QTabWidget, QTextEdit, QCheckBox, QGroupBox,
+    QFileDialog, QScrollArea
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 
-# =================== 自动发布页面 ===================
-class AutoPublishPage(QWidget):
-    def __init__(self):
+class AIGenerateThread(QThread):
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, config, prompt):
         super().__init__()
-        self._init_ui()
-        self.refresh()
+        self.config = config
+        self.prompt = prompt
 
-    def _init_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
-
-        hdr = QHBoxLayout()
-        tv = QVBoxLayout()
-        t = QLabel('自动发布')
-        t.setFont(QFont('Segoe UI', 20, QFont.Weight.Bold))
-        sub = QLabel('配置定时自动发布规则，从素材库自动选材并发布到频道')
-        sub.setStyleSheet('color:#8b949e;')
-        tv.addWidget(t)
-        tv.addWidget(sub)
-        hdr.addLayout(tv, 1)
-        refresh_btn = QPushButton('🔄 刷新')
-        refresh_btn.clicked.connect(self.refresh)
-        new_btn = QPushButton('+ 新建规则')
-        new_btn.setObjectName('primary_btn')
-        new_btn.clicked.connect(self._new_rule)
-        hdr.addWidget(refresh_btn)
-        hdr.addWidget(new_btn)
-        lay.addLayout(hdr)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._container = QWidget()
-        self._list_lay = QVBoxLayout(self._container)
-        self._list_lay.setSpacing(10)
-        self._list_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._scroll.setWidget(self._container)
-        lay.addWidget(self._scroll)
-
-    def refresh(self):
-        while self._list_lay.count():
-            item = self._list_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        rules = DB.fetchall('SELECT * FROM auto_publish_rules ORDER BY id DESC')
-        if not rules:
-            empty = QLabel('暂无自动发布规则\n点击「新建规则」创建')
-            empty.setStyleSheet('color:#8b949e;')
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setMinimumHeight(200)
-            self._list_lay.addWidget(empty)
-            return
-
-        for rule in rules:
-            card = self._create_rule_card(rule)
-            self._list_lay.addWidget(card)
-
-    def _create_rule_card(self, rule):
-        card = QFrame()
-        card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(8)
-
-        top = QHBoxLayout()
-        name = QLabel(f'cs{rule["id"]}   {rule["name"]}')
-        name.setFont(QFont('Segoe UI', 13))
-
-        enabled = rule.get('enabled', 1)
-        status_lbl = QLabel('运行中' if enabled else '已停止')
-        status_style = 'color:#2ea043;background:#1a3a2a;' if enabled else 'color:#8b949e;background:#21262d;'
-        status_lbl.setStyleSheet(f'{status_style}border-radius:10px;padding:2px 10px;font-size:11px;')
-
-        mode_lbl = QLabel(rule.get('schedule_type', 'daily').replace('daily', '每天').replace('interval', '间隔'))
-        mode_lbl.setStyleSheet('color:#8b949e;background:#21262d;border-radius:10px;padding:2px 8px;font-size:11px;')
-
-        top.addWidget(name, 1)
-        top.addWidget(status_lbl)
-        top.addWidget(mode_lbl)
-
-        info = QHBoxLayout()
-        sched_icon = '📅 每天 1 条' if rule.get('schedule_type') == 'daily' else '⏱ 间隔'
-        info_parts = [
-            sched_icon,
-            f'⏰ 固定时间 {rule.get("schedule_time", "20:00")}',
-            '🔀 随机' if rule.get('random_order') else '📋 顺序',
-            f'📡 {rule.get("send_mode", "原视频")}',
-            f'已发: {rule.get("published_count", 0)} 条',
-        ]
-        if rule.get('last_publish'):
-            info_parts.append(f'上次: {rule["last_publish"][:16]}')
-
-        folder = DB.fetchone('SELECT name FROM media_folders WHERE id=?', (rule.get('media_folder_id', 0),))
-        if folder:
-            info_parts.append(f'素材: {folder["name"]}')
-
-        info_lbl = QLabel('    '.join(info_parts))
-        info_lbl.setStyleSheet('color:#8b949e;font-size:11px;')
-        info.addWidget(info_lbl, 1)
-
-        actions = QHBoxLayout()
-        btns_data = [
-            ('👁', '查看', lambda: self._view_rule(rule)),
-            ('▶', '立即执行', lambda: self._run_rule(rule)),
-            ('⏱', '定时', None),
-            ('🗑️', '删除', lambda: self._delete_rule(rule['id'])),
-            ('🔄', '重置', lambda: self._reset_rule(rule['id'])),
-            ('❌', '停止/启动', lambda: self._toggle_rule(rule)),
-        ]
-        for icon, tip, handler in btns_data:
-            btn = QPushButton(icon)
-            btn.setObjectName('icon_btn')
-            btn.setFixedSize(28, 28)
-            btn.setToolTip(tip)
-            if handler:
-                btn.clicked.connect(handler)
-            if icon == '🗑️':
-                btn.setStyleSheet('color:#da3633;background:transparent;border:none;')
-            actions.addWidget(btn)
-        actions.addStretch()
-
-        lay.addLayout(top)
-        lay.addLayout(info)
-        lay.addLayout(actions)
-        return card
-
-    def _new_rule(self):
-        dlg = AutoPublishRuleDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            data = dlg.get_data()
-            DB.execute('''INSERT INTO auto_publish_rules 
-                (name, channel_ids, media_folder_id, copy_template_id, writing_direction_id,
-                schedule_type, schedule_time, random_order, send_after_done, send_mode, enabled)
-                VALUES (?,?,?,?,?,?,?,?,?,?,1)''',
-                (data['name'], json.dumps(data['channel_ids']), data.get('folder_id', 0),
-                 data.get('tmpl_id', 0), data.get('wd_id', 0),
-                 data.get('schedule_type', 'daily'), data.get('schedule_time', '20:00'),
-                 1 if data.get('random_order') else 0,
-                 data.get('send_after_done', 'stop'), data.get('send_mode', 'original')))
-            self.refresh()
-
-    def _toggle_rule(self, rule):
-        new_enabled = 0 if rule.get('enabled') else 1
-        DB.execute('UPDATE auto_publish_rules SET enabled=? WHERE id=?', (new_enabled, rule['id']))
-        self.refresh()
-
-    def _delete_rule(self, rule_id):
-        if QMessageBox.question(self, '确认', '确定删除此规则？') == QMessageBox.StandardButton.Yes:
-            DB.execute('DELETE FROM auto_publish_rules WHERE id=?', (rule_id,))
-            self.refresh()
-
-    def _reset_rule(self, rule_id):
-        DB.execute('UPDATE auto_publish_rules SET published_count=0, last_publish="" WHERE id=?', (rule_id,))
-        self.refresh()
-
-    def _view_rule(self, rule):
-        QMessageBox.information(self, '规则详情', json.dumps(rule, ensure_ascii=False, indent=2))
-
-    def _run_rule(self, rule):
-        QMessageBox.information(self, '立即执行', f'将立即执行规则: {rule["name"]}')
+    def run(self):
+        try:
+            from core.ai_generator import AIGenerator
+            import asyncio
+            gen = AIGenerator(self.config)
+            result = asyncio.run(gen.generate_text(self.prompt))
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
-class AutoPublishRuleDialog(QDialog):
+class AIPage(QWidget):
+    """AI文案生成页面"""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('新建自动发布规则')
-        self.setFixedSize(520, 600)
-        self.setStyleSheet('QDialog{background:#161b22;}')
-        lay = QVBoxLayout(self)
-        lay.setSpacing(12)
+        self._setup_ui()
 
-        lay.addWidget(QLabel('规则名称:'))
-        self._name = QLineEdit()
-        self._name.setPlaceholderText('如: 每日推送')
-        lay.addWidget(self._name)
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
-        lay.addWidget(QLabel('素材文件夹:'))
-        self._folder = QComboBox()
-        folders = DB.fetchall('SELECT * FROM media_folders')
-        for f in folders:
-            self._folder.addItem(f'📁 {f["name"]}', f['id'])
-        lay.addWidget(self._folder)
+        title = QLabel("🤖 AI文案生成")
+        title.setObjectName("titleLabel")
+        layout.addWidget(title)
 
-        lay.addWidget(QLabel('发布频道 (多选):'))
-        self._ch_list = QListWidget()
-        self._ch_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self._ch_list.setFixedHeight(100)
-        for ch in DB.fetchall('SELECT * FROM channels'):
-            item = QListWidgetItem(f'📡 {ch["name"]}')
-            item.setData(Qt.ItemDataRole.UserRole, ch['id'])
-            self._ch_list.addItem(item)
-        lay.addWidget(self._ch_list)
+        # AI配置
+        config_card = QFrame()
+        config_card.setObjectName("card")
+        config_layout = QFormLayout(config_card)
+        config_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        config_layout.setSpacing(10)
 
-        sched_row = QHBoxLayout()
-        sched_row.addWidget(QLabel('发布时间:'))
-        self._sched_time = QTimeEdit()
-        self._sched_time.setDisplayFormat('HH:mm')
-        self._sched_time.setTime(QTime(20, 55))
-        sched_row.addWidget(self._sched_time)
-        sched_row.addStretch()
-        lay.addLayout(sched_row)
+        cfg_title = QLabel("⚙️ AI接口配置")
+        cfg_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #58a6ff;")
+        config_layout.addRow("", cfg_title)
 
-        self._random_order = QCheckBox('随机顺序发布')
-        self._random_order.setChecked(True)
-        lay.addWidget(self._random_order)
+        self.provider_combo = QComboBox()
+        from core.ai_generator import AI_PRESETS
+        self.provider_combo.addItems(list(AI_PRESETS.keys()))
+        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        config_layout.addRow("AI服务商:", self.provider_combo)
 
-        lay.addWidget(QLabel('发送完所有素材后:'))
-        self._done_action = QComboBox()
-        self._done_action.addItem('停止发布', 'stop')
-        self._done_action.addItem('循环重新发布', 'loop')
-        lay.addWidget(self._done_action)
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setPlaceholderText("输入API Key")
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        config_layout.addRow("API Key:", self.api_key_input)
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
+        self.model_input = QLineEdit()
+        self.model_input.setPlaceholderText("模型名称（自动填充）")
+        config_layout.addRow("模型:", self.model_input)
 
-    def get_data(self):
-        ch_ids = [item.data(Qt.ItemDataRole.UserRole) for item in self._ch_list.selectedItems()]
-        return {
-            'name': self._name.text().strip(),
-            'folder_id': self._folder.currentData(),
-            'channel_ids': ch_ids,
-            'schedule_type': 'daily',
-            'schedule_time': self._sched_time.time().toString('HH:mm'),
-            'random_order': self._random_order.isChecked(),
-            'send_after_done': self._done_action.currentData(),
-        }
+        self.provider_note = QLabel("")
+        self.provider_note.setStyleSheet("color: #8b949e; font-size: 11px;")
+        config_layout.addRow("说明:", self.provider_note)
 
+        layout.addWidget(config_card)
 
-# =================== 文案库页面 ===================
-class CopywritingPage(QWidget):
-    def __init__(self):
-        super().__init__()
-        self._init_ui()
-        self.refresh()
+        # 文案生成
+        gen_card = QFrame()
+        gen_card.setObjectName("card")
+        gen_layout = QVBoxLayout(gen_card)
+        gen_layout.setSpacing(10)
 
-    def _init_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
+        gen_title = QLabel("✍️ 生成文案")
+        gen_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #e6edf3;")
+        gen_layout.addWidget(gen_title)
 
-        hdr = QHBoxLayout()
-        tv = QVBoxLayout()
-        t = QLabel('文案库')
-        t.setFont(QFont('Segoe UI', 20, QFont.Weight.Bold))
-        sub = QLabel('管理预设文案，可附带视频或图片，用于自动发布')
-        sub.setStyleSheet('color:#8b949e;')
-        tv.addWidget(t)
-        tv.addWidget(sub)
-        hdr.addLayout(tv, 1)
-        new_btn = QPushButton('+ 新建文案')
-        new_btn.setObjectName('primary_btn')
-        new_btn.clicked.connect(self._new_copy)
-        hdr.addWidget(new_btn)
-        lay.addLayout(hdr)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._container = QWidget()
-        self._list_lay = QVBoxLayout(self._container)
-        self._list_lay.setSpacing(8)
-        self._list_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._scroll.setWidget(self._container)
-        lay.addWidget(self._scroll)
-
-    def refresh(self):
-        while self._list_lay.count():
-            item = self._list_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        copies = DB.fetchall('SELECT * FROM copywriting ORDER BY id DESC')
-        if not copies:
-            empty = QLabel('还没有文案，点击「新建文案」开始创建')
-            empty.setStyleSheet('color:#8b949e;')
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setMinimumHeight(200)
-            self._list_lay.addWidget(empty)
-            return
-
-        for copy in copies:
-            card = self._create_copy_card(copy)
-            self._list_lay.addWidget(card)
-
-    def _create_copy_card(self, copy):
-        card = QFrame()
-        card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-        lay = QHBoxLayout(card)
-        lay.setContentsMargins(14, 12, 14, 12)
-
-        content_lay = QVBoxLayout()
-        title = QLabel(copy.get('title') or f'文案 #{copy["id"]}')
-        title.setFont(QFont('Segoe UI', 13))
-        content_preview = QLabel(copy['content'][:80] + '...' if len(copy['content']) > 80 else copy['content'])
-        content_preview.setStyleSheet('color:#8b949e;font-size:12px;')
-        content_preview.setWordWrap(True)
-        content_lay.addWidget(title)
-        content_lay.addWidget(content_preview)
-
-        edit_btn = QPushButton('✏️')
-        edit_btn.setObjectName('icon_btn')
-        del_btn = QPushButton('🗑️')
-        del_btn.setObjectName('icon_btn')
-        del_btn.setStyleSheet('color:#da3633;')
-        del_btn.clicked.connect(lambda: self._delete_copy(copy['id']))
-
-        lay.addLayout(content_lay, 1)
-        lay.addWidget(edit_btn)
-        lay.addWidget(del_btn)
-        return card
-
-    def _new_copy(self):
-        dlg = CopyDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            data = dlg.get_data()
-            DB.execute('INSERT INTO copywriting (title, content, tags) VALUES (?,?,?)',
-                       (data['title'], data['content'], data.get('tags', '')))
-            self.refresh()
-
-    def _delete_copy(self, copy_id):
-        if QMessageBox.question(self, '确认', '删除此文案？') == QMessageBox.StandardButton.Yes:
-            DB.execute('DELETE FROM copywriting WHERE id=?', (copy_id,))
-            self.refresh()
-
-
-class CopyDialog(QDialog):
-    def __init__(self, parent=None, data=None):
-        super().__init__(parent)
-        self.setWindowTitle('新建文案')
-        self.setFixedSize(560, 460)
-        self.setStyleSheet('QDialog{background:#161b22;}')
-        lay = QVBoxLayout(self)
-        lay.addWidget(QLabel('标题:'))
-        self._title = QLineEdit(data.get('title', '') if data else '')
-        lay.addWidget(self._title)
-        lay.addWidget(QLabel('正文内容:'))
-        self._content = QTextEdit()
-        self._content.setPlainText(data.get('content', '') if data else '')
-        self._content.setFixedHeight(200)
-        lay.addWidget(self._content)
-        lay.addWidget(QLabel('标签 (用空格分隔):'))
-        self._tags = QLineEdit(data.get('tags', '') if data else '')
-        lay.addWidget(self._tags)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
-
-    def get_data(self):
-        return {'title': self._title.text().strip(), 'content': self._content.toPlainText().strip(), 'tags': self._tags.text().strip()}
-
-
-# =================== 文案格式页面 ===================
-class CopyTemplatePage(QWidget):
-    EMOJIS = ['🔥', '❤️', '👋', '😍', '🤤', '🍑', '🍒', '💦', '⭐', '💎', '🎬', '🎥', '🎞️', '❤️‍🔥', '💋', '🌶️', '🍓', '👅', '💥', '🚀', '✅', '⏱️', '🔞']
-
-    def __init__(self):
-        super().__init__()
-        self._init_ui()
-        self.refresh()
-
-    def _init_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
-
-        hdr = QHBoxLayout()
-        tv = QVBoxLayout()
-        t = QLabel('文案格式')
-        t.setFont(QFont('Segoe UI', 20, QFont.Weight.Bold))
-        sub = QLabel('管理视频发布时的文案排版模板，支持自定义占位符和 HTML 标签')
-        sub.setStyleSheet('color:#8b949e;')
-        tv.addWidget(t)
-        tv.addWidget(sub)
-        hdr.addLayout(tv, 1)
-        new_btn = QPushButton('+ 新增格式')
-        new_btn.setObjectName('primary_btn')
-        new_btn.clicked.connect(self._new_template)
-        hdr.addWidget(new_btn)
-        lay.addLayout(hdr)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        content_lay = QVBoxLayout(content)
-        content_lay.setSpacing(12)
-
-        # 占位符说明
-        info_card = QFrame()
-        info_card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-        info_lay = QVBoxLayout(info_card)
-        info_lay.setSpacing(8)
-
-        placeholders = QLabel(
-            '可用占位符：<b style="color:#1f6feb">{title}</b> AI标题、'
-            '<b style="color:#1f6feb">{content}</b> AI内容、'
-            '<b style="color:#1f6feb">{duration}</b> 时长（如3分20秒）、'
-            '<b style="color:#1f6feb">{emoji}</b> 标题表情，'
-            '支持 Telegram HTML 标签: <b>&lt;b&gt;</b> 加粗, <b>&lt;i&gt;</b> 斜体, <b>&lt;blockquote&gt;</b> 引用块。'
+        self.prompt_input = QTextEdit()
+        self.prompt_input.setPlaceholderText(
+            "输入生成提示词，例如：\n"
+            "为成人内容频道写一条吸引眼球的推广文案，风格活泼，包含emoji，100字以内"
         )
-        placeholders.setStyleSheet('color:#e6edf3;font-size:12px;')
-        placeholders.setWordWrap(True)
-        info_lay.addWidget(placeholders)
+        self.prompt_input.setFixedHeight(100)
+        gen_layout.addWidget(self.prompt_input)
 
-        emoji_row_lbl = QLabel('Emoji 使用：直接在模板中输入 emoji 即可，点击下方复制常用表情：')
-        emoji_row_lbl.setStyleSheet('color:#8b949e;font-size:11px;')
-        info_lay.addWidget(emoji_row_lbl)
+        # 快速提示词
+        quick_row = QHBoxLayout()
+        quick_row.addWidget(QLabel("快速模板:"))
+        templates = [
+            ("🔥 热门推广", "为成人内容频道写一条吸引眼球的推广文案，活泼风格，含emoji，100字以内"),
+            ("📺 视频介绍", "为一个视频写简短吸引人的介绍文案，包含互动引导，80字以内"),
+            ("📢 频道推广", "写一条Telegram频道推广文案，突出频道特色和价值，含emoji，120字以内"),
+        ]
+        for tpl_name, tpl_text in templates:
+            btn = QPushButton(tpl_name)
+            btn.setFixedHeight(26)
+            btn.clicked.connect(lambda checked, t=tpl_text: self.prompt_input.setPlainText(t))
+            quick_row.addWidget(btn)
+        quick_row.addStretch()
+        gen_layout.addLayout(quick_row)
 
-        emoji_row = QHBoxLayout()
-        emoji_row.setSpacing(4)
-        for e in self.EMOJIS:
-            btn = QPushButton(e)
-            btn.setFixedSize(32, 32)
-            btn.setStyleSheet('QPushButton{background:#21262d;border:none;border-radius:4px;font-size:14px;}QPushButton:hover{background:#30363d;}')
-            btn.clicked.connect(lambda _, em=e: QApplication.clipboard().setText(em))
-            btn.setToolTip('点击复制')
-            emoji_row.addWidget(btn)
-        emoji_row.addStretch()
-        info_lay.addLayout(emoji_row)
-        content_lay.addWidget(info_card)
+        btn_row = QHBoxLayout()
+        self.gen_btn = QPushButton("🚀 生成文案")
+        self.gen_btn.setObjectName("primaryBtn")
+        self.gen_btn.setFixedHeight(38)
+        self.gen_btn.clicked.connect(self._generate)
+        btn_row.addWidget(self.gen_btn)
+        btn_row.addStretch()
+        gen_layout.addLayout(btn_row)
 
-        self._tmpl_container = QWidget()
-        self._tmpl_lay = QVBoxLayout(self._tmpl_container)
-        self._tmpl_lay.setSpacing(8)
-        self._tmpl_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        content_lay.addWidget(self._tmpl_container)
+        self.result_output = QTextEdit()
+        self.result_output.setPlaceholderText("AI生成的文案将显示在这里...")
+        self.result_output.setMinimumHeight(150)
+        gen_layout.addWidget(self.result_output)
 
-        content_lay.addStretch()
-        scroll.setWidget(content)
-        lay.addWidget(scroll)
+        save_btn_row = QHBoxLayout()
+        save_btn = QPushButton("💾 保存到文案库")
+        save_btn.clicked.connect(self._save_caption)
+        copy_btn = QPushButton("📋 复制")
+        copy_btn.clicked.connect(self._copy_result)
+        save_btn_row.addWidget(save_btn)
+        save_btn_row.addWidget(copy_btn)
+        save_btn_row.addStretch()
+        gen_layout.addLayout(save_btn_row)
 
-    def refresh(self):
-        while self._tmpl_lay.count():
-            item = self._tmpl_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        layout.addWidget(gen_card)
+        layout.addStretch()
 
-        templates = DB.fetchall('SELECT * FROM copy_templates ORDER BY id')
-        for tmpl in templates:
-            card = self._create_template_card(tmpl)
-            self._tmpl_lay.addWidget(card)
+        self._on_provider_changed(self.provider_combo.currentText())
 
-    def _create_template_card(self, tmpl):
-        card = QFrame()
-        card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-        lay = QHBoxLayout(card)
-        lay.setContentsMargins(14, 12, 14, 12)
+    def _on_provider_changed(self, provider: str):
+        try:
+            from core.ai_generator import AI_PRESETS
+            preset = AI_PRESETS.get(provider, {})
+            self.model_input.setText(preset.get('text_model', ''))
+            self.provider_note.setText(preset.get('note', ''))
+        except Exception:
+            pass
 
-        left = QVBoxLayout()
-        name_row = QHBoxLayout()
-        name_lbl = QLabel(f'📝 {tmpl["name"]}')
-        name_lbl.setFont(QFont('Segoe UI', 13))
-        builtin_badge = QLabel('内置') if tmpl.get('is_builtin') else QLabel()
-        builtin_badge.setStyleSheet('color:#1f6feb;background:#1f3a5f;border-radius:8px;padding:2px 8px;font-size:11px;')
-        name_row.addWidget(name_lbl)
-        if tmpl.get('is_builtin'):
-            name_row.addWidget(builtin_badge)
-        name_row.addStretch()
-        left.addLayout(name_row)
-
-        code_lbl = QLabel(tmpl.get('template', '')[:100])
-        code_lbl.setStyleSheet('color:#8b949e;font-size:11px;font-family:Consolas,monospace;')
-        code_lbl.setWordWrap(True)
-        left.addWidget(code_lbl)
-
-        preview_btn = QPushButton('👁')
-        preview_btn.setObjectName('icon_btn')
-        preview_btn.setFixedSize(28, 28)
-        preview_btn.setToolTip('预览')
-        preview_btn.clicked.connect(lambda: self._preview_template(tmpl))
-
-        edit_btn = QPushButton('✏️')
-        edit_btn.setObjectName('icon_btn')
-        edit_btn.setFixedSize(28, 28)
-        edit_btn.clicked.connect(lambda: self._edit_template(tmpl))
-
-        lay.addLayout(left, 1)
-        lay.addWidget(preview_btn)
-        lay.addWidget(edit_btn)
-        return card
-
-    def _new_template(self):
-        dlg = TemplateDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            data = dlg.get_data()
-            DB.execute('INSERT INTO copy_templates (name, template) VALUES (?,?)', (data['name'], data['template']))
-            self.refresh()
-
-    def _edit_template(self, tmpl):
-        dlg = TemplateDialog(self, tmpl)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            data = dlg.get_data()
-            DB.execute('UPDATE copy_templates SET name=?, template=? WHERE id=?', (data['name'], data['template'], tmpl['id']))
-            self.refresh()
-
-    def _preview_template(self, tmpl):
-        template = tmpl.get('template', '')
-        preview = template.replace('{title}', '这是一个示例标题').replace('{content}', '这是AI生成的文案内容示例').replace('{duration}', '3:20').replace('{emoji}', '🔥')
-        QMessageBox.information(self, f'预览: {tmpl["name"]}', preview)
-
-
-class TemplateDialog(QDialog):
-    def __init__(self, parent=None, data=None):
-        super().__init__(parent)
-        self.setWindowTitle('文案模板')
-        self.setFixedSize(520, 400)
-        self.setStyleSheet('QDialog{background:#161b22;}')
-        lay = QVBoxLayout(self)
-        lay.addWidget(QLabel('模板名称:'))
-        self._name = QLineEdit(data['name'] if data else '')
-        lay.addWidget(self._name)
-        lay.addWidget(QLabel('模板内容 (支持 {title} {content} {duration} {emoji} 占位符及HTML标签):'))
-        self._template = QTextEdit()
-        self._template.setPlainText(data['template'] if data else '')
-        self._template.setFixedHeight(200)
-        self._template.setFont(QFont('Consolas', 11))
-        lay.addWidget(self._template)
-        hint = QLabel('HTML标签: <b></b> 加粗  <i></i> 斜体  <blockquote></blockquote> 引用')
-        hint.setStyleSheet('color:#8b949e;font-size:11px;')
-        lay.addWidget(hint)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
-
-    def get_data(self):
-        return {'name': self._name.text().strip(), 'template': self._template.toPlainText()}
-
-
-# =================== 写作方向页面 ===================
-class WritingDirectionPage(QWidget):
-    def __init__(self):
-        super().__init__()
-        self._init_ui()
-        self.refresh()
-
-    def _init_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
-
-        hdr = QHBoxLayout()
-        tv = QVBoxLayout()
-        t = QLabel('写作方向')
-        t.setFont(QFont('Segoe UI', 20, QFont.Weight.Bold))
-        sub = QLabel('管理 AI 生成文案时的写作风格预设，可在自动发布规则中选择使用')
-        sub.setStyleSheet('color:#8b949e;')
-        tv.addWidget(t)
-        tv.addWidget(sub)
-        hdr.addLayout(tv, 1)
-        new_btn = QPushButton('+ 新增预设')
-        new_btn.setObjectName('primary_btn')
-        new_btn.clicked.connect(self._new_direction)
-        hdr.addWidget(new_btn)
-        lay.addLayout(hdr)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._container = QWidget()
-        self._list_lay = QVBoxLayout(self._container)
-        self._list_lay.setSpacing(8)
-        self._list_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._scroll.setWidget(self._container)
-        lay.addWidget(self._scroll)
-
-    def refresh(self):
-        while self._list_lay.count():
-            item = self._list_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        wds = DB.fetchall('SELECT * FROM writing_directions ORDER BY id DESC')
-        if not wds:
-            empty = QLabel('暂无写作方向预设')
-            empty.setStyleSheet('color:#8b949e;')
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setMinimumHeight(200)
-            self._list_lay.addWidget(empty)
+    def _generate(self):
+        api_key = self.api_key_input.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "提示", "请先输入API Key")
             return
 
-        for wd in wds:
-            card = QFrame()
-            card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-            lay2 = QHBoxLayout(card)
-            lay2.setContentsMargins(14, 12, 14, 12)
-            left = QVBoxLayout()
-            name = QLabel(f'🎯 {wd["name"]}')
-            name.setFont(QFont('Segoe UI', 13))
-            desc = QLabel(wd.get('description', ''))
-            desc.setStyleSheet('color:#8b949e;font-size:12px;')
-            left.addWidget(name)
-            left.addWidget(desc)
-            edit_btn = QPushButton('✏️')
-            edit_btn.setObjectName('icon_btn')
-            edit_btn.clicked.connect(lambda _, w=wd: self._edit_direction(w))
-            del_btn = QPushButton('🗑️')
-            del_btn.setObjectName('icon_btn')
-            del_btn.setStyleSheet('color:#da3633;')
-            del_btn.clicked.connect(lambda _, wid=wd['id']: self._delete_direction(wid))
-            lay2.addLayout(left, 1)
-            lay2.addWidget(edit_btn)
-            lay2.addWidget(del_btn)
-            self._list_lay.addWidget(card)
-
-    def _new_direction(self):
-        dlg = WritingDirectionDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            data = dlg.get_data()
-            DB.execute('INSERT INTO writing_directions (name, description, style, keywords, extra_prompt) VALUES (?,?,?,?,?)',
-                       (data['name'], data['description'], data['style'], data['keywords'], data['extra_prompt']))
-            self.refresh()
-
-    def _edit_direction(self, wd):
-        dlg = WritingDirectionDialog(self, wd)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            data = dlg.get_data()
-            DB.execute('UPDATE writing_directions SET name=?, description=?, style=?, keywords=?, extra_prompt=? WHERE id=?',
-                       (data['name'], data['description'], data['style'], data['keywords'], data['extra_prompt'], wd['id']))
-            self.refresh()
-
-    def _delete_direction(self, wd_id):
-        if QMessageBox.question(self, '确认', '删除此写作方向？') == QMessageBox.StandardButton.Yes:
-            DB.execute('DELETE FROM writing_directions WHERE id=?', (wd_id,))
-            self.refresh()
-
-
-class WritingDirectionDialog(QDialog):
-    def __init__(self, parent=None, data=None):
-        super().__init__(parent)
-        self.setWindowTitle('写作方向')
-        self.setFixedSize(520, 500)
-        self.setStyleSheet('QDialog{background:#161b22;}')
-        lay = QVBoxLayout(self)
-        lay.addWidget(QLabel('预设名称:'))
-        self._name = QLineEdit(data['name'] if data else '')
-        lay.addWidget(self._name)
-        lay.addWidget(QLabel('描述:'))
-        self._desc = QLineEdit(data.get('description', '') if data else '')
-        lay.addWidget(self._desc)
-        lay.addWidget(QLabel('写作风格:'))
-        self._style = QLineEdit(data.get('style', '') if data else '')
-        self._style.setPlaceholderText('如: 暗示性、大胆、引人入胜')
-        lay.addWidget(self._style)
-        lay.addWidget(QLabel('关键词 (空格分隔):'))
-        self._keywords = QLineEdit(data.get('keywords', '') if data else '')
-        self._keywords.setPlaceholderText('如: 福利 成人 私密')
-        lay.addWidget(self._keywords)
-        lay.addWidget(QLabel('额外提示词:'))
-        self._extra = QTextEdit()
-        self._extra.setPlainText(data.get('extra_prompt', '') if data else '')
-        self._extra.setFixedHeight(120)
-        self._extra.setPlaceholderText('给AI的额外写作指导...')
-        lay.addWidget(self._extra)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
-
-    def get_data(self):
-        return {'name': self._name.text().strip(), 'description': self._desc.text().strip(),
-                'style': self._style.text().strip(), 'keywords': self._keywords.text().strip(),
-                'extra_prompt': self._extra.toPlainText().strip()}
-
-
-# =================== 素材采集页面 ===================
-class MediaCollectPage(QWidget):
-    def __init__(self):
-        super().__init__()
-        self._init_ui()
-        self.refresh()
-
-    def _init_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
-
-        hdr = QHBoxLayout()
-        tv = QVBoxLayout()
-        t = QLabel('素材采集')
-        t.setFont(QFont('Segoe UI', 20, QFont.Weight.Bold))
-        sub = QLabel('从网站、Telegram 频道、RSS 订阅自动采集素材到素材库')
-        sub.setStyleSheet('color:#8b949e;')
-        tv.addWidget(t)
-        tv.addWidget(sub)
-        hdr.addLayout(tv, 1)
-        log_btn = QPushButton('📋 采集日志')
-        new_btn = QPushButton('+ 新建规则')
-        new_btn.setObjectName('primary_btn')
-        new_btn.clicked.connect(self._new_collect_rule)
-        hdr.addWidget(log_btn)
-        hdr.addWidget(new_btn)
-        lay.addLayout(hdr)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._container = QWidget()
-        self._list_lay = QVBoxLayout(self._container)
-        self._list_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._scroll.setWidget(self._container)
-        lay.addWidget(self._scroll)
-
-    def refresh(self):
-        while self._list_lay.count():
-            item = self._list_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        empty = QLabel('暂无采集规则，点击「新建规则」开始')
-        empty.setStyleSheet('color:#8b949e;')
-        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty.setMinimumHeight(200)
-        self._list_lay.addWidget(empty)
-
-    def _new_collect_rule(self):
-        QMessageBox.information(self, '素材采集', '支持从以下来源采集:\n\n• Telegram 频道/群组\n• RSS 订阅链接\n• 自定义网页 URL\n\n(此功能开发中...)')
-
-
-# =================== 群发页面 ===================
-class BroadcastPage(QWidget):
-    def __init__(self):
-        super().__init__()
-        self._init_ui()
-        self.refresh()
-
-    def _init_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
-
-        hdr = QHBoxLayout()
-        tv = QVBoxLayout()
-        t = QLabel('群发')
-        t.setFont(QFont('Segoe UI', 20, QFont.Weight.Bold))
-        sub = QLabel('向多个群组批量发送素材')
-        sub.setStyleSheet('color:#8b949e;')
-        tv.addWidget(t)
-        tv.addWidget(sub)
-        hdr.addLayout(tv, 1)
-        refresh_btn = QPushButton('🔄 刷新')
-        refresh_btn.clicked.connect(self.refresh)
-        new_btn = QPushButton('+ 新建规则')
-        new_btn.setObjectName('primary_btn')
-        new_btn.clicked.connect(self._new_rule)
-        hdr.addWidget(refresh_btn)
-        hdr.addWidget(new_btn)
-        lay.addLayout(hdr)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._container = QWidget()
-        self._list_lay = QVBoxLayout(self._container)
-        self._list_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._scroll.setWidget(self._container)
-        lay.addWidget(self._scroll)
-
-    def refresh(self):
-        while self._list_lay.count():
-            item = self._list_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        rules = DB.fetchall('SELECT * FROM broadcast_rules')
-        if not rules:
-            empty = QLabel('暂无群发规则\n点击「新建规则」创建你的第一个群发任务')
-            empty.setStyleSheet('color:#8b949e;')
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setMinimumHeight(200)
-            self._list_lay.addWidget(empty)
-
-    def _new_rule(self):
-        QMessageBox.information(self, '群发规则', '群发功能：\n一次性向多个频道/群组发送相同内容。\n可选择素材文件夹中的文件批量发送。')
-
-
-# =================== 发布设置页面 ===================
-class PublishSettingsPage(QWidget):
-    def __init__(self):
-        super().__init__()
-        self._init_ui()
-        self._load_settings()
-
-    def _init_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
-
-        t = QLabel('发布设置')
-        t.setFont(QFont('Segoe UI', 20, QFont.Weight.Bold))
-        sub = QLabel('管理文案尾部链接、封面贴图和标签库')
-        sub.setStyleSheet('color:#8b949e;')
-        lay.addWidget(t)
-        lay.addWidget(sub)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        content_lay = QVBoxLayout(content)
-        content_lay.setSpacing(16)
-
-        # 文案尾部链接
-        links_card = QFrame()
-        links_card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-        links_lay = QVBoxLayout(links_card)
-        links_hdr = QHBoxLayout()
-        links_title = QLabel('🔗  文案尾部链接')
-        links_title.setFont(QFont('Segoe UI', 13, QFont.Weight.Bold))
-        links_sub = QLabel('发布时自动添加到文案末尾')
-        links_sub.setStyleSheet('color:#8b949e;font-size:12px;')
-        self._links_count = QLabel('0 个链接')
-        self._links_count.setStyleSheet('color:#d29922;background:#2d2000;border-radius:10px;padding:2px 8px;font-size:11px;')
-        links_hdr.addWidget(links_title)
-        links_hdr.addWidget(links_sub)
-        links_hdr.addStretch()
-        links_hdr.addWidget(self._links_count)
-        links_lay.addLayout(links_hdr)
-
-        self._links_container = QVBoxLayout()
-        links_lay.addLayout(self._links_container)
-
-        links_btns = QHBoxLayout()
-        add_link_btn = QPushButton('+ 添加链接')
-        add_link_btn.clicked.connect(self._add_link)
-        save_links_btn = QPushButton('💾 保存')
-        save_links_btn.setObjectName('primary_btn')
-        save_links_btn.clicked.connect(self._save_links)
-        links_btns.addWidget(add_link_btn)
-        links_btns.addWidget(save_links_btn)
-        links_btns.addStretch()
-        links_lay.addLayout(links_btns)
-        content_lay.addWidget(links_card)
-
-        # 封面贴图 + 标签库
-        bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(16)
-
-        # 封面贴图
-        sticker_card = QFrame()
-        sticker_card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-        sticker_lay = QVBoxLayout(sticker_card)
-        sticker_hdr = QHBoxLayout()
-        sticker_title = QLabel('🖼️  封面贴图')
-        sticker_title.setFont(QFont('Segoe UI', 13, QFont.Weight.Bold))
-        self._sticker_count = QLabel('0 个')
-        self._sticker_count.setStyleSheet('color:#d29922;background:#2d2000;border-radius:10px;padding:2px 8px;font-size:11px;')
-        sticker_hdr.addWidget(sticker_title)
-        sticker_hdr.addStretch()
-        sticker_hdr.addWidget(self._sticker_count)
-        sticker_lay.addLayout(sticker_hdr)
-
-        sticker_sub = QLabel('封面随机叠加贴图素材')
-        sticker_sub.setStyleSheet('color:#8b949e;font-size:12px;')
-        sticker_lay.addWidget(sticker_sub)
-
-        add_sticker_btn = QPushButton('+ 添加')
-        add_sticker_btn.clicked.connect(self._add_sticker)
-        sticker_lay.addWidget(add_sticker_btn)
-        sticker_lay.addStretch()
-
-        hint = QLabel('PNG/WebP 支持透明背景，在任务配置中设置叠加数量')
-        hint.setStyleSheet('color:#8b949e;font-size:11px;')
-        hint.setWordWrap(True)
-        sticker_lay.addWidget(hint)
-        bottom_row.addWidget(sticker_card)
-
-        # 标签库
-        tag_card = QFrame()
-        tag_card.setStyleSheet('QFrame{background:#161b22;border:1px solid #30363d;border-radius:8px;}')
-        tag_lay = QVBoxLayout(tag_card)
-        tag_hdr = QHBoxLayout()
-        tag_title = QLabel('🏷️  标签库')
-        tag_title.setFont(QFont('Segoe UI', 13, QFont.Weight.Bold))
-        self._tag_count = QLabel('0 个')
-        self._tag_count.setStyleSheet('color:#d29922;background:#2d2000;border-radius:10px;padding:2px 8px;font-size:11px;')
-        tag_hdr.addWidget(tag_title)
-        tag_hdr.addStretch()
-        tag_hdr.addWidget(self._tag_count)
-        tag_lay.addLayout(tag_hdr)
-
-        tag_sub = QLabel('发布时随机选取5个标签')
-        tag_sub.setStyleSheet('color:#8b949e;font-size:12px;')
-        tag_lay.addWidget(tag_sub)
-
-        tag_row = QHBoxLayout()
-        self._tag_input = QLineEdit()
-        self._tag_input.setPlaceholderText('输入标签，空格分隔可批量添加（如 #驾货 #极品 #巨卖）')
-        tag_row.addWidget(self._tag_input, 1)
-        add_tag_btn = QPushButton('+ 添加')
-        add_tag_btn.setObjectName('primary_btn')
-        add_tag_btn.clicked.connect(self._add_tags)
-        tag_row.addWidget(add_tag_btn)
-        tag_lay.addLayout(tag_row)
-
-        self._tag_list = QListWidget()
-        self._tag_list.setFixedHeight(120)
-        tag_lay.addWidget(self._tag_list)
-
-        tag_ai_hint = QLabel('标签库为空，将使用AI生成的标签')
-        tag_ai_hint.setStyleSheet('color:#d29922;font-size:11px;')
-        tag_lay.addWidget(tag_ai_hint)
-
-        save_tags_btn = QPushButton('💾 保存标签库')
-        save_tags_btn.setObjectName('primary_btn')
-        save_tags_btn.clicked.connect(self._save_tags)
-        tag_lay.addWidget(save_tags_btn)
-
-        bottom_row.addWidget(tag_card)
-        content_lay.addLayout(bottom_row)
-        content_lay.addStretch()
-        scroll.setWidget(content)
-        lay.addWidget(scroll)
-
-        self._link_items = []
-
-    def _load_settings(self):
-        pub = DB.fetchone('SELECT * FROM publish_settings WHERE id=1')
-        if not pub:
+        prompt = self.prompt_input.toPlainText().strip()
+        if not prompt:
+            QMessageBox.warning(self, "提示", "请输入提示词")
             return
 
-        links = json.loads(pub.get('footer_links', '[]'))
-        for link in links:
-            self._add_link_item(link.get('text', ''), link.get('url', ''))
-        self._links_count.setText(f'{len(links)} 个链接')
+        try:
+            from core.ai_generator import AI_PRESETS
+            provider = self.provider_combo.currentText()
+            preset = AI_PRESETS.get(provider, {})
+            config = {
+                'api_url': preset.get('api_url', ''),
+                'api_key': api_key,
+                'text_model': self.model_input.text() or preset.get('text_model', ''),
+            }
+        except Exception as e:
+            QMessageBox.critical(self, "错误", str(e))
+            return
 
-        tags = json.loads(pub.get('tag_library', '[]'))
-        for tag in tags:
-            self._tag_list.addItem(tag)
-        self._tag_count.setText(f'{len(tags)} 个')
+        self.gen_btn.setEnabled(False)
+        self.gen_btn.setText("生成中...")
+        self.result_output.setPlainText("正在生成，请稍候...")
 
-    def _add_link(self):
-        self._add_link_item('', '')
+        self._gen_thread = AIGenerateThread(config, prompt)
+        self._gen_thread.finished.connect(self._on_gen_finished)
+        self._gen_thread.error.connect(self._on_gen_error)
+        self._gen_thread.start()
 
-    def _add_link_item(self, text, url):
-        row = QHBoxLayout()
-        text_input = QLineEdit(text)
-        text_input.setPlaceholderText('显示文字')
-        url_input = QLineEdit(url)
-        url_input.setPlaceholderText('https://t.me/...')
-        del_btn = QPushButton('🗑️')
-        del_btn.setObjectName('icon_btn')
-        del_btn.setStyleSheet('color:#da3633;')
+    def _on_gen_finished(self, text: str):
+        self.gen_btn.setEnabled(True)
+        self.gen_btn.setText("🚀 生成文案")
+        self.result_output.setPlainText(text)
 
-        item = (text_input, url_input)
-        self._link_items.append(item)
+    def _on_gen_error(self, err: str):
+        self.gen_btn.setEnabled(True)
+        self.gen_btn.setText("🚀 生成文案")
+        self.result_output.setPlainText(f"生成失败: {err}")
+        QMessageBox.warning(self, "生成失败", f"AI接口返回错误：\n{err}")
 
-        def remove():
-            self._link_items.remove(item)
-            widget_to_remove = text_input.parent()
-            for i in range(row.count()):
-                w = row.itemAt(i).widget()
-                if w:
-                    w.deleteLater()
-
-        del_btn.clicked.connect(remove)
-        row.addWidget(text_input, 1)
-        row.addWidget(url_input, 2)
-        row.addWidget(del_btn)
-        self._links_container.addLayout(row)
-
-    def _save_links(self):
-        links = []
-        for text_input, url_input in self._link_items:
-            t = text_input.text().strip()
-            u = url_input.text().strip()
-            if t or u:
-                links.append({'text': t, 'url': u})
-        DB.execute('UPDATE publish_settings SET footer_links=? WHERE id=1', (json.dumps(links),))
-        self._links_count.setText(f'{len(links)} 个链接')
-        QMessageBox.information(self, '已保存', '尾部链接已保存')
-
-    def _add_sticker(self):
-        files, _ = QFileDialog.getOpenFileNames(self, '选择贴图文件', '', 'Images (*.png *.webp *.jpg)')
-        if files:
-            pub = DB.fetchone('SELECT sticker_paths FROM publish_settings WHERE id=1')
-            existing = json.loads(pub.get('sticker_paths', '[]')) if pub else []
-            existing.extend(files)
-            DB.execute('UPDATE publish_settings SET sticker_paths=? WHERE id=1', (json.dumps(existing),))
-            self._sticker_count.setText(f'{len(existing)} 个')
-
-    def _add_tags(self):
-        text = self._tag_input.text().strip()
+    def _save_caption(self):
+        text = self.result_output.toPlainText().strip()
         if not text:
             return
-        tags = [t.strip().lstrip('#') for t in text.split() if t.strip()]
-        for tag in tags:
-            if tag:
-                self._tag_list.addItem(f'#{tag}')
-        self._tag_input.clear()
-        self._tag_count.setText(f'{self._tag_list.count()} 个')
+        try:
+            from core.database import get_db
+            db = get_db()
+            db.execute("INSERT INTO captions (content, category) VALUES (?, '自动生成')", (text,))
+            db.commit()
+            db.close()
+            QMessageBox.information(self, "成功", "文案已保存到文案库！")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", str(e))
 
-    def _save_tags(self):
-        tags = [self._tag_list.item(i).text() for i in range(self._tag_list.count())]
-        DB.execute('UPDATE publish_settings SET tag_library=? WHERE id=1', (json.dumps(tags),))
-        self._tag_count.setText(f'{len(tags)} 个')
-        QMessageBox.information(self, '已保存', '标签库已保存')
+    def _copy_result(self):
+        from PyQt6.QtWidgets import QApplication
+        text = self.result_output.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+            QMessageBox.information(self, "已复制", "文案已复制到剪贴板")
+
+
+class SettingsPage(QWidget):
+    """系统设置页面"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+        self._load_settings()
+
+    def _setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(24, 20, 24, 20)
+        main_layout.setSpacing(16)
+
+        title = QLabel("⚙️ 系统设置")
+        title.setObjectName("titleLabel")
+        main_layout.addWidget(title)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSpacing(16)
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(content)
+        main_layout.addWidget(scroll)
+
+        # FFmpeg设置
+        ffmpeg_card = QFrame()
+        ffmpeg_card.setObjectName("card")
+        ffmpeg_layout = QVBoxLayout(ffmpeg_card)
+        ffmpeg_layout.setSpacing(10)
+
+        ffmpeg_title = QLabel("🎬 FFmpeg 配置")
+        ffmpeg_title.setStyleSheet("font-size: 14px; font-weight: 600; color: #e6edf3;")
+        ffmpeg_layout.addWidget(ffmpeg_title)
+
+        ffmpeg_note = QLabel(
+            "📌 FFmpeg 必须配置才能使用视频裁剪和截图功能。\n"
+            "   将 ffmpeg.exe 放在程序同目录（推荐），或手动指定路径。"
+        )
+        ffmpeg_note.setStyleSheet("""
+            color: #8b949e; font-size: 12px;
+            background-color: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 10px;
+        """)
+        ffmpeg_note.setWordWrap(True)
+        ffmpeg_layout.addWidget(ffmpeg_note)
+
+        path_row = QHBoxLayout()
+        path_row.addWidget(QLabel("FFmpeg路径:"))
+        self.ffmpeg_path_input = QLineEdit()
+        self.ffmpeg_path_input.setPlaceholderText("留空=自动检测（程序目录或系统PATH）")
+        path_row.addWidget(self.ffmpeg_path_input)
+        browse_btn = QPushButton("📂 浏览")
+        browse_btn.setFixedWidth(80)
+        browse_btn.clicked.connect(self._browse_ffmpeg)
+        path_row.addWidget(browse_btn)
+        test_btn = QPushButton("🔍 测试")
+        test_btn.setFixedWidth(70)
+        test_btn.clicked.connect(self._test_ffmpeg)
+        path_row.addWidget(test_btn)
+        ffmpeg_layout.addLayout(path_row)
+
+        out_row = QHBoxLayout()
+        out_row.addWidget(QLabel("输出文件夹名:"))
+        self.output_folder_input = QLineEdit()
+        self.output_folder_input.setPlaceholderText("已裁剪")
+        self.output_folder_input.setFixedWidth(150)
+        out_row.addWidget(self.output_folder_input)
+        out_note = QLabel("（在原视频目录下创建此文件夹存放处理结果）")
+        out_note.setStyleSheet("color: #8b949e; font-size: 11px;")
+        out_row.addWidget(out_note)
+        out_row.addStretch()
+        ffmpeg_layout.addLayout(out_row)
+
+        layout.addWidget(ffmpeg_card)
+
+        # 发布设置
+        pub_card = QFrame()
+        pub_card.setObjectName("card")
+        pub_layout = QFormLayout(pub_card)
+        pub_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        pub_layout.setSpacing(10)
+
+        pub_title = QLabel("📤 发布设置")
+        pub_title.setStyleSheet("font-size: 14px; font-weight: 600; color: #e6edf3;")
+        pub_layout.addRow("", pub_title)
+
+        self.interval_spin = QSpinBox()
+        self.interval_spin.setRange(1, 60)
+        self.interval_spin.setValue(3)
+        self.interval_spin.setSuffix(" 秒")
+        pub_layout.addRow("频道间发送间隔:", self.interval_spin)
+
+        self.retry_spin = QSpinBox()
+        self.retry_spin.setRange(1, 10)
+        self.retry_spin.setValue(3)
+        pub_layout.addRow("失败重试次数:", self.retry_spin)
+
+        layout.addWidget(pub_card)
+
+        # 代理设置
+        proxy_card = QFrame()
+        proxy_card.setObjectName("card")
+        proxy_layout = QFormLayout(proxy_card)
+        proxy_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        proxy_layout.setSpacing(10)
+
+        proxy_title = QLabel("🌐 代理设置（全局）")
+        proxy_title.setStyleSheet("font-size: 14px; font-weight: 600; color: #e6edf3;")
+        proxy_layout.addRow("", proxy_title)
+
+        self.http_proxy_input = QLineEdit()
+        self.http_proxy_input.setPlaceholderText("http://127.0.0.1:7890")
+        proxy_layout.addRow("HTTP代理:", self.http_proxy_input)
+
+        self.socks_proxy_input = QLineEdit()
+        self.socks_proxy_input.setPlaceholderText("socks5://127.0.0.1:1080")
+        proxy_layout.addRow("SOCKS5代理:", self.socks_proxy_input)
+
+        layout.addWidget(proxy_card)
+        layout.addStretch()
+
+        # 保存按钮
+        save_btn = QPushButton("💾 保存所有设置")
+        save_btn.setObjectName("primaryBtn")
+        save_btn.setFixedHeight(40)
+        save_btn.setFixedWidth(180)
+        save_btn.clicked.connect(self._save_settings)
+        main_layout.addWidget(save_btn)
+
+    def _browse_ffmpeg(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择FFmpeg可执行文件", "",
+            "可执行文件 (ffmpeg.exe ffmpeg);;所有文件 (*.*)"
+        )
+        if path:
+            self.ffmpeg_path_input.setText(path)
+
+    def _test_ffmpeg(self):
+        import subprocess
+        path = self.ffmpeg_path_input.text().strip() or 'ffmpeg'
+        try:
+            result = subprocess.run(
+                [path, '-version'], capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                version_line = result.stdout.split('\n')[0]
+                QMessageBox.information(self, "FFmpeg 正常", f"检测成功！\n{version_line}")
+            else:
+                QMessageBox.warning(self, "FFmpeg 错误", "FFmpeg 返回错误，请检查路径")
+        except FileNotFoundError:
+            QMessageBox.warning(
+                self, "FFmpeg 未找到",
+                "未找到 FFmpeg！\n\n请将 ffmpeg.exe 放在程序目录，\n"
+                "或手动指定路径。\n\n下载：https://ffmpeg.org/download.html"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "测试失败", str(e))
+
+    def _load_settings(self):
+        try:
+            from core.database import get_settings
+            s = get_settings()
+            self.ffmpeg_path_input.setText(s.get('ffmpeg_path', ''))
+            self.output_folder_input.setText(s.get('output_folder_name', '已裁剪'))
+            self.interval_spin.setValue(int(s.get('send_interval', '3')))
+            self.retry_spin.setValue(int(s.get('max_retry', '3')))
+            self.http_proxy_input.setText(s.get('proxy_http', ''))
+            self.socks_proxy_input.setText(s.get('proxy_socks5', ''))
+        except Exception:
+            pass
+
+    def _save_settings(self):
+        try:
+            from core.database import set_setting
+            set_setting('ffmpeg_path', self.ffmpeg_path_input.text().strip())
+            set_setting('output_folder_name', self.output_folder_input.text().strip() or '已裁剪')
+            set_setting('send_interval', str(self.interval_spin.value()))
+            set_setting('max_retry', str(self.retry_spin.value()))
+            set_setting('proxy_http', self.http_proxy_input.text().strip())
+            set_setting('proxy_socks5', self.socks_proxy_input.text().strip())
+            QMessageBox.information(self, "成功", "✅ 设置已保存！")
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", str(e))
+
+
+class HelpPage(QWidget):
+    """操作指南页面"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
+
+        title = QLabel("📖 使用指南")
+        title.setObjectName("titleLabel")
+        layout.addWidget(title)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(12)
+        scroll.setWidget(content)
+
+        sections = [
+            ("🚀 快速开始", """
+1. 添加发布账号（「账号与频道」→「发布账号」→「添加Bot账号」）
+   - Bot API：从 @BotFather 获取 Token，最大支持50MB文件
+   - MTProto真实账号：需要手机号 + API ID/Hash，支持2GB超大文件
+
+2. 添加目标频道（「账号与频道」→「发布频道」→「添加频道」）
+   - 公开频道：@频道用户名
+   - 私有频道：-100XXXXXXXXX（通过 @userinfobot 获取）
+
+3. 导入媒体素材（「媒体库」→「导入视频/图片」）
+
+4. 创建发布任务（「任务中心」→「创建任务」）
+   - 选择账号、频道、素材、文案
+   - 设置调度：立即/定时/循环
+
+5. 点击「立即发布」开始执行
+"""),
+            ("🎬 视频处理 (FFmpeg)", """
+FFmpeg 配置：
+• 将 ffmpeg.exe 放在 TGAutoPublisher.exe 同一文件夹（推荐）
+• 或在「系统设置」→「FFmpeg路径」中手动指定
+• 下载FFmpeg：https://ffmpeg.org/download.html → Windows builds
+
+视频处理功能：
+• ✂️ 裁剪：截取视频片段，设置起止时间
+• 📸 截图：均匀提取9张截图（3×3网格，生成封面图）
+• 输出位置：原视频同目录下自动创建「已裁剪」文件夹
+
+使用步骤：
+1. 进入「媒体库」→「视频处理」标签
+2. 选择视频文件或文件夹
+3. 选择处理方式（截图/裁剪/同时执行）
+4. 点击「开始处理」
+"""),
+            ("🤖 AI文案生成", """
+支持的AI服务商（含无内容限制）：
+• Grok (xAI) - 支持成人内容，免费额度充足
+• Together AI - 开源模型，无内容审查
+• Mistral - 欧洲模型，政策宽松
+• DeepSeek - 中文优化，性价比高
+• Groq - 极速推理
+• Gemini - Google，免费额度
+• OpenAI - GPT系列
+• 小悟SaaS - 国内无限制API
+• 等共12家
+
+使用步骤：
+1. 进入「AI文案」页面
+2. 选择服务商，填入API Key
+3. 输入生成提示词
+4. 点击「生成文案」
+5. 可保存到文案库供复用
+"""),
+            ("📅 定时发布", """
+调度类型：
+• 立即发布：创建任务后立即开始
+• 指定时间：在设定时间自动触发
+• 定时循环：每隔N分钟重复发布
+
+多频道发布模式：
+• 顺序发布：按频道列表顺序逐一发布
+• 随机发布：随机选择频道发布
+• 全部发布：同时向所有频道发布
+
+频道间隔：可设置每个频道之间的发送间隔（防刷屏）
+"""),
+            ("📱 MTProto真实账号", """
+MTProto账号支持发送最大2GB的文件，突破Bot API的50MB限制。
+
+获取 API ID / API Hash：
+1. 访问 https://my.telegram.org
+2. 用手机号登录
+3. 点击「API development tools」
+4. 创建一个App（填写任意名称）
+5. 复制 App api_id 和 App api_hash
+
+注意事项：
+• 首次使用需要手机验证码确认
+• Session字符串会自动保存，下次无需重复验证
+• 建议使用专用的小号账号，不要用主账号
+"""),
+        ]
+
+        for section_title, section_content in sections:
+            card = QFrame()
+            card.setObjectName("card")
+            card_layout = QVBoxLayout(card)
+            card_layout.setSpacing(8)
+
+            sec_title = QLabel(section_title)
+            sec_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #58a6ff;")
+            card_layout.addWidget(sec_title)
+
+            sec_content = QLabel(section_content.strip())
+            sec_content.setStyleSheet("""
+                font-size: 12px;
+                color: #c9d1d9;
+                line-height: 1.6;
+            """)
+            sec_content.setWordWrap(True)
+            sec_content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            card_layout.addWidget(sec_content)
+
+            content_layout.addWidget(card)
+
+        content_layout.addStretch()
+        layout.addWidget(scroll)
